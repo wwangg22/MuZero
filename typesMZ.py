@@ -1,5 +1,6 @@
 from typing import Any, Dict, Callable, List, NamedTuple, Tuple, Union, Optional, Sequence
 from agents import Network
+import torch
 Player = int
 LatentState = List[float]
 AfterState = List[float]
@@ -35,7 +36,7 @@ class KnownBounds(NamedTuple):
 NetworkFactory = Callable[[], Network]
 
 class NetworkOutput(NamedTuple):
-    value: float
+    value: torch.Tensor
     probabilities: Dict[ActionOrOutcome, float]
-    reward: Optional[float] = 0.0
+    reward: torch.Tensor
 

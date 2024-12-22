@@ -10,17 +10,17 @@ import numpy as np
 import torch.nn.functional as F
 
 
-class Actor(metaclass=abc.ABCMeta):
+class Actor():
     """An actor to interact with the environment.
     """
-    @abc.abstractmethod
+    # @abc.abstractmethod
     def reset(self):
         """Resets the player for a new episode."""
-    @abc.abstractmethod
+    # @abc.abstractmethod
     def select_action(self, env: Environment) -> Action:
         """Selects an action for the current state of the environment.
         """
-    @abc.abstractmethod
+    # @abc.abstractmethod
     def stats(self) -> SearchStats:
         """Returns the stats for the player after it has selected an action."""
 
@@ -60,9 +60,13 @@ class StochasticMuZeroActor(Actor):
         """Selects an action given the root node.
         """
         # Get the visit count distribution.
+        # actions, visit_counts = zip(*[
+        #     (action, node.visit_counts)
+        #     for action, node in node.children.items()
+        # ])
         actions, visit_counts = zip(*[
-            (action, node.visit_counts)
-            for action, node in node.children.items()
+            (action, child_node.visit_counts)
+            for action, child_node in root.children.items()
         ])
         # Temperature
         temperature = self.config.visit_softmax_temperature_fn(self.
@@ -176,7 +180,7 @@ class Network:
         # We assume predictions from a latent state include:
         # - value: scalar
         # - policy: probabilities over actions
-        self.value_head = nn.Linear(hidden_dim, 1)
+        self.value_head = nn.Linear(hidden_dim, 601)
         self.policy_head = nn.Linear(hidden_dim, self.action_space)
 
         # For afterstate predictions, we reuse the same tower and just produce a policy and value (no reward).
@@ -203,7 +207,7 @@ class Network:
         # The snippet suggests that predictions for a latent state may include a reward.
         # The original code returns a reward in NetworkOutput.
         # We'll add a reward head from latent state for completeness:
-        self.reward_head = nn.Linear(hidden_dim, 1)
+        self.reward_head = nn.Linear(hidden_dim, 601)
 
 
     def representation(self, observation) -> LatentState:
@@ -218,17 +222,21 @@ class Network:
         return x
 
     def predictions(self, state: LatentState) -> 'NetworkOutput':
-        """Returns the network predictions for a latent state: value, policy, reward."""
-        value = self.value_head(state).squeeze(-1).item()  # scalar
+        """Returns the network predictions for a latent state: value, policy, reward.
+        returns an output of 601
+        """
+        value = self.value_head(state)
+        value_prob = F.softmax(value, dim = -1)
         policy_logits = self.policy_head(state)
         policy_probs = F.softmax(policy_logits, dim=-1)
         # For simplicity, pick an example reward from the reward head:
-        reward = self.reward_head(state).squeeze(-1).item()
+        reward = self.reward_head(state)
+        reward_prob = F.softmax(reward, dim=-1)
         # Convert probabilities to a dict {action: prob}
         # Assuming action space is integer from 0 to action_space-1
         probabilities = {a: policy_probs[0, a].item() for a in range(self.action_space)}
 
-        return NetworkOutput(value=value, probabilities=probabilities, reward=reward)
+        return NetworkOutput(value=value_prob, probabilities=probabilities, reward=reward_prob)
 
     def afterstate_dynamics(self, state: LatentState, action: Action) -> AfterState:
         """Implements the dynamics from latent state and action to afterstate.

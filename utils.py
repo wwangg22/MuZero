@@ -1,6 +1,7 @@
 from typing import Optional, List, Sequence, Tuple, Union, Any
-from config import *
+from config import KnownBounds, Network, StochasticMuZeroConfig
 from typesMZ import Trajectory
+import numpy as np
 MAXIMUM_FLOAT_VALUE = float('inf')
 
 Player = int
@@ -139,3 +140,150 @@ class Environment:
     def to_play(self) -> Player:
         """Returns the current player to play.
         return 0"""
+
+class twenty48(Environment):
+    """Implements the rules of the environment.
+    """
+
+    def __init__(self):
+        self.grid_size = 4
+        self.last_reward = 0
+        self._reset()
+
+    def _reset(self):
+        self.grid = np.zeros((self.grid_size, self.grid_size), dtype=float)  # Use float
+        self._add_new_tile()
+        self._add_new_tile()
+        return self.grid.flatten()
+    
+    def _add_new_tile(self):
+        empty_cells = list(zip(*np.where(self.grid == 0)))
+        if empty_cells:
+            row, col = empty_cells[np.random.randint(len(empty_cells))]
+            self.grid[row, col] = 2.0 if np.random.rand() < 0.9 else 4.0  # Float values
+
+    def _merge(self, grid):
+        reward = 0
+        for i in range(self.grid_size):
+            for j in range(self.grid_size - 1):
+                if grid[i, j] == grid[i, j + 1] and grid[i, j] != 0:
+                    grid[i, j] *= 2.0  # Float values
+                    reward += grid[i, j]
+                    grid[i, j + 1] = 0
+        return grid, reward
+    
+    def _compress(self, grid):
+        new_grid = np.zeros_like(grid)
+        for i in range(self.grid_size):
+            pos = 0
+            for j in range(self.grid_size):
+                if grid[i, j] != 0:
+                    new_grid[i, pos] = grid[i, j]
+                    pos += 1
+        return new_grid
+    
+    def _reverse(self, grid):
+        return np.flip(grid, axis=1)
+
+    def _transpose(self, grid):
+        return np.transpose(grid)
+
+    def _move(self, direction):
+        if direction == 0:  # Up
+            self.grid = self.transpose(self.grid)
+            self.grid = self.compress(self.grid)
+            self.grid, reward = self.merge(self.grid)
+            self.grid = self.compress(self.grid)
+            self.grid = self.transpose(self.grid)
+        elif direction == 1:  # Down
+            self.grid = self.transpose(self.grid)
+            self.grid = self.reverse(self.grid)
+            self.grid = self.compress(self.grid)
+            self.grid, reward = self.merge(self.grid)
+            self.grid = self.compress(self.grid)
+            self.grid = self.reverse(self.grid)
+            self.grid = self.transpose(self.grid)
+        elif direction == 2:  # Left
+            self.grid = self.compress(self.grid)
+            self.grid, reward = self.merge(self.grid)
+            self.grid = self.compress(self.grid)
+        elif direction == 3:  # Right
+            self.grid = self.reverse(self.grid)
+            self.grid = self.compress(self.grid)
+            self.grid, reward = self.merge(self.grid)
+            self.grid = self.compress(self.grid)
+            self.grid = self.reverse(self.grid)
+        else:
+            raise ValueError("Invalid direction! Use 0 (up), 1 (down), 2 (left), or 3 (right).")
+
+        return reward
+    
+    def _step(self, action):
+        initial_grid = self.grid.copy()
+        reward = self.move(action)
+        if not np.array_equal(initial_grid, self.grid):
+            self.add_new_tile()
+        
+        self.last_reward = reward
+
+        # done = self.is_game_over()
+        # if done:
+        #     reward += np.max(self.grid)
+        # return self.grid.flatten(), reward, done
+    def _is_game_over(self):
+        if np.any(self.grid == 0):  # Empty cells
+            return False
+        for i in range(self.grid_size):
+            for j in range(self.grid_size - 1):
+                if self.grid[i, j] == self.grid[i, j + 1]:  # Adjacent horizontal match
+                    return False
+        for i in range(self.grid_size - 1):
+            for j in range(self.grid_size):
+                if self.grid[i, j] == self.grid[i + 1, j]:  # Adjacent vertical match
+                    return False
+        return True
+    def _binary_rep(self):
+        flat_board = self.grid.flatten()
+        arr = np.asarray(flat_board).ravel() 
+        bits_array = (arr[:, None] >> np.arange(30, -1, -1)) & 1
+
+        return bits_array.reshape(-1)
+
+
+    def apply(self, action: Action):
+        """Applies an action or a chance outcome to the environment.
+        """
+        self._step(action)
+
+    def observation(self):
+        """Returns the observation of the environment to feed to the network.
+        """
+        return self._binary_rep()
+    def is_terminal(self) -> bool:
+        """Returns true if the environment is in a terminal state.
+        return False
+        """
+        return self._is_game_over()
+    def legal_actions(self) -> Sequence[Action]:
+        """Returns the legal actions for the current state.
+        return []
+        """
+        initial_grid = self.grid.copy()
+        legal_actions = []
+        for a in range(4):
+            self.grid = initial_grid.copy()
+            self._move(a)
+            if not np.array_equal(initial_grid, self.grid):
+                legal_actions.append(a)
+        return legal_actions
+
+
+    def reward(self, player: Player) -> float:
+        """Returns the last reward for the player.
+        return 0.0
+        """
+        return self.last_reward
+    def to_play(self) -> Player:
+        """Returns the current player to play.
+        return 0"""
+        return 0
