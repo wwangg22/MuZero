@@ -1,5 +1,4 @@
 from typing import Any, Dict, Callable, List, NamedTuple, Tuple, Union, Optional, Sequence
-from agents import Network
 import torch
 Player = int
 LatentState = List[float]
@@ -16,7 +15,7 @@ VisitSoftmaxTemperatureFn = Callable[[int], float]
 # NetworkFactory = Callable[[], Network]
 
 class SearchStats(NamedTuple):
-    search_policy: Dict[Action, int]
+    search_policy: List[int]
     search_value: float
 class State(NamedTuple):
     """Data for a single state."""
@@ -33,10 +32,11 @@ class KnownBounds(NamedTuple):
     min: float
     max: float
 
-NetworkFactory = Callable[[], Network]
 
 class NetworkOutput(NamedTuple):
     value: torch.Tensor
-    probabilities: Dict[ActionOrOutcome, float]
+    float_value: float
+    probabilities: List[float]
     reward: torch.Tensor
+    float_reward: float
 

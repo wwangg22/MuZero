@@ -1,7 +1,7 @@
-from config import StochasticMuZeroConfig
-from utils import ActionOutcomeHistory, Network, MinMaxStats, Node, NetworkOutput
+from utils import ActionOutcomeHistory, MinMaxStats, Node, StochasticMuZeroConfig, Network, NetworkOutput
 import numpy as np
 import math
+import torch
 from typing import Union, List
 
 
@@ -19,8 +19,9 @@ def run_mcts(config: StochasticMuZeroConfig, root: Node,
         node = root
         search_path = [node]
         while node.expanded():
+            # print("node ", search_path)
             action_or_outcome, node = select_child(config, node, min_max_stats)
-            history.add_action(action_or_outcome)
+            history.add_action_or_outcome(action_or_outcome)
             search_path.append(node)
         # Inside the search tree we use the dynamics function to obtain the next
         # hidden state given an action and the previous hidden state.
@@ -28,24 +29,24 @@ def run_mcts(config: StochasticMuZeroConfig, root: Node,
         if parent.is_chance:
             # The parent is a chance node, afterstate to latent state transition.
             # The last action or outcome is a chance outcome.
-            child_state = network_output.dynamics(parent.state,
+            child_state = network.dynamics(parent.state,
             history.last_action_or_outcome())
-            network_output = network_output.predictions(child_state)
+            network_output = network.predictions(child_state)
             # This child is a decision node.
             is_child_chance = False
         else:
             # The parent is a decision node, latent state to afterstate transition.
             # The last action or outcome is an action.
-            child_state = network_output.afterstate_dynamics(
+            child_state = network.afterstate_dynamics(
             parent.state, history.last_action_or_outcome())
-            network_output = network_output.afterstate_predictions(child_state)
+            network_output = network.afterstate_predictions(child_state)
             # The child is a chance node.
             is_child_chance = True
             # Expand the node.
         expand_node(node, child_state, network_output, history.to_play(),
             is_child_chance)
         # Backpropagate the value up the tree.
-        backpropagate(search_path, network_output.value, history.to_play(),
+        backpropagate(search_path, network_output.float_value, history.to_play(),
                 config.discount, min_max_stats)
 
 # Select the child with the highest UCB score.
@@ -53,9 +54,15 @@ def select_child(config: StochasticMuZeroConfig, node: Node,
     min_max_stats: MinMaxStats):
     if node.is_chance:
         # If the node is chance we sample from the prior.
-        outcomes, probs = zip(*[(o, n.prob) for o, n in node.children.items()
+        outcomes, probs = zip(*[(o, n.prior) for o, n in node.children.items()
         ])
+        # print(outcomes)
+        # print(probs)
+        # print(sum(probs))
+        # print("probs", probs)
+        probs = probs / np.sum(probs)
         outcome = np.random.choice(outcomes, p=probs)
+        # print(outcome)
         return outcome, node.children[outcome]
         # For decision nodes we use the pUCT formula.
     _, action, child = max(
@@ -88,9 +95,13 @@ def expand_node(node: Node, state: Union[LatentState, AfterState],
     node.to_play = player
     node.state = state
     node.is_chance = is_chance
-    node.reward = network_output.reward
-    for action, prob in network_output.probabilities.items():
-        node.children[action] = Node(prob)
+    node.reward = network_output.float_reward
+    probs = network_output.probabilities
+    if network_output.probabilities.dim() ==2:
+        probs = network_output.probabilities.squeeze()
+    # print("probs", network_output.probabilities)
+    for action in range(len(network_output.probabilities)):
+        node.children[action] = Node(probs[action].item())
 
 # At the end of a simulation, we propagate the evaluation all the way up the
 # tree to the root.
@@ -111,5 +122,5 @@ def add_exploration_noise(config: StochasticMuZeroConfig, node: Node):
         dir_alpha = 1.0 / np.sqrt(len(actions))
         noise = np.random.dirichlet([dir_alpha] * len(actions))
         frac = config.root_exploration_fraction
-    for a, n in zip(actions, noise):
-        node.children[a].prior = node.children[a].prior * (1 - frac) + n * frac
+        for a, n in zip(actions, noise):
+            node.children[a].prior = node.children[a].prior * (1 - frac) + n * frac
