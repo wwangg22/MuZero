@@ -176,7 +176,7 @@ def run_selfplay_w_update(config: StochasticMuZeroConfig,
         actor.reset()
         episode = []
         print(f"ReplayBuffer ID: {id(replay_buffer)}")
-
+        total_rew =0
         while not env.is_terminal():
             # print("hello")
             action = actor.select_action(env)
@@ -189,6 +189,9 @@ def run_selfplay_w_update(config: StochasticMuZeroConfig,
                 search_stats=actor.stats())
             episode.append(state)
             env.apply(action)
+            total_rew += env.reward(env.to_play())
+        print("reward for this round: ", total_rew)
+
         # Send the episode to the replay.
         replay_buffer.save(episode)
         learner.learn()
