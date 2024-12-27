@@ -7,6 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import threading
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 MAXIMUM_FLOAT_VALUE = float('inf')
 
@@ -39,12 +40,12 @@ class Network(nn.Module):
         self.outcome_space = outcome_space
 
         # A linear layer to map from observation to an initial hidden state (256-dim)
-        self.obs_to_hidden = nn.Linear(observation_dim, hidden_dim)
+        self.obs_to_hidden = nn.Linear(observation_dim, hidden_dim).to(device)
 
         # 10-block ResNet v2 tower
-        self.resnet_tower_rep = ResNetV2Tower(input_dim=hidden_dim, num_blocks=10)
-        self.resnet_tower_af_dyn = ResNetV2Tower(input_dim=hidden_dim, num_blocks=10)
-        self.resnet_tower_dyn = ResNetV2Tower(input_dim=hidden_dim, num_blocks=10)
+        self.resnet_tower_rep = ResNetV2Tower(input_dim=hidden_dim, num_blocks=10).to(device)
+        self.resnet_tower_af_dyn = ResNetV2Tower(input_dim=hidden_dim, num_blocks=10).to(device)
+        self.resnet_tower_dyn = ResNetV2Tower(input_dim=hidden_dim, num_blocks=10).to(device)
 
 
 
@@ -52,10 +53,10 @@ class Network(nn.Module):
         # We assume predictions from a latent state include:
         # - value: scalar
         # - policy: probabilities over actions
-        self.value_head = nn.Linear(hidden_dim, 601)
-        self.af_value_head = nn.Linear(hidden_dim, 601)
-        self.policy_head = nn.Linear(hidden_dim, self.action_space)
-        self.afterstate_pred = nn.Linear(hidden_dim, 32)
+        self.value_head = nn.Linear(hidden_dim, 601).to(device)
+        self.af_value_head = nn.Linear(hidden_dim, 601).to(device)
+        self.policy_head = nn.Linear(hidden_dim, self.action_space).to(device)
+        self.afterstate_pred = nn.Linear(hidden_dim, 32).to(device)
 
         # For afterstate predictions, we reuse the same tower and just produce a policy and value (no reward).
         # We can reuse value_head and policy_head with a different forward pass, 
@@ -64,30 +65,33 @@ class Network(nn.Module):
         # Afterstate dynamics:
         # given a latent state and an action, produce an afterstate.
         # We'll model this as a simple MLP:
-        self.afterstate_fc = nn.Linear(hidden_dim + self.action_space, hidden_dim)
+        self.afterstate_fc = nn.Linear(hidden_dim + self.action_space, hidden_dim).to(device)
 
         # Dynamics:
         # given afterstate and outcome, produce next latent state.
         # Similarly, an MLP:
-        self.dynamics_fc = nn.Linear(hidden_dim + self.outcome_space, hidden_dim)
+        self.dynamics_fc = nn.Linear(hidden_dim + self.outcome_space, hidden_dim).to(device)
 
         # Encoder:
         # maps observation to outcome distribution (logits) to be quantized.
         # The snippet suggests encoder producing codebook indices. We'll do a simple linear:
-        self.encoder_fc = nn.Linear(observation_dim, codebook_size)
+        self.encoder_fc = nn.Linear(observation_dim, codebook_size).to(device)
         self.codebook = VQCodebook(M=codebook_size)
 
         # Reward head (for state transitions):
         # The snippet suggests that predictions for a latent state may include a reward.
         # The original code returns a reward in NetworkOutput.
         # We'll add a reward head from latent state for completeness:
-        self.reward_head = nn.Linear(hidden_dim, 601)
+        self.reward_head = nn.Linear(hidden_dim, 601).to(device)
 
 
     def representation(self, observation) -> LatentState:
         """Representation function maps from observation to latent state.
         Here we assume 'observation' is a tensor of shape (batch, observation_dim).
         """
+        if isinstance(observation, np.ndarray):
+            observation = torch.from_numpy(observation).float()
+        observation = observation.to(device)
         # Map observation to hidden dim
         x = self.obs_to_hidden(observation)
         # Pass through ResNet tower
@@ -99,6 +103,7 @@ class Network(nn.Module):
         """Returns the network predictions for a latent state: value, policy, reward.
         returns an output of 601
         """
+        state = state.to(device)
         value = self.value_head(state)
         value_prob = F.softmax(value, dim = -1)
         policy_logits = self.policy_head(state)
@@ -112,7 +117,7 @@ class Network(nn.Module):
         # # Convert probabilities to a dict {action: prob}
         # # Assuming action space is integer from 0 to action_space-1
         #     probabilities = {a: policy_probs[0, a].item() for a in range(self.action_space)}
-        support = torch.arange(0, 601)
+        support = torch.arange(0, 601).to(device)
         expected_value = torch.sum(value_prob * support, dim=-1)  # shape: (batch_size,)
         expected_reward = torch.sum(reward_prob * support, dim=-1)
         if expected_reward.dim() == 0:
@@ -138,9 +143,11 @@ class Network(nn.Module):
             action_one_hot = F.one_hot(torch.tensor([action]), num_classes=self.action_space).float()
         else:
             action_one_hot = F.one_hot(action, num_classes=self.action_space).float()
+        action_one_hot = action_one_hot.to(device)
         # Expand state to batch dimension if needed
         if len(state.shape) == 1:
             state = state.unsqueeze(0)  # (1, hidden_dim)
+        state = state.to(device)
         # Concatenate
         x = torch.cat([state, action_one_hot], dim=-1)
         x = self.afterstate_fc(x)
@@ -151,6 +158,7 @@ class Network(nn.Module):
         """Returns the network predictions for an afterstate.
         Afterstates differ from latent states in that we do not produce a reward here (assumption from snippet).
         """
+        state = state.to(device)
         value = self.af_value_head(state)
         value_prob = F.softmax(value, dim = -1)
         policy_logits = self.afterstate_pred(state)
@@ -160,7 +168,7 @@ class Network(nn.Module):
         # else:
         #     probabilities = {a: policy_probs[0, a].item() for a in range(self.action_space)}
 
-        support = torch.arange(0, 601)
+        support = torch.arange(0, 601).to(device)
         expected_value = torch.sum(value_prob * support, dim=-1)  # shape: (batch_size,)
         if expected_value.dim() == 0:
             float_value = expected_value.item()
@@ -184,9 +192,11 @@ class Network(nn.Module):
         else:
             # outcome_one_hot = F.one_hot(outcome, num_classes=self.outcome_space).float()
             outcome_one_hot = outcome
+        outcome_one_hot = outcome_one_hot.to(device)
         # ensure state is batch dimension
         if len(state.shape) == 1:
             state = state.unsqueeze(0)
+        state = state.to(device)
         x = torch.cat([state, outcome_one_hot], dim=-1)
         x = self.dynamics_fc(x)
         x = self.resnet_tower_dyn(x)
@@ -198,6 +208,7 @@ class Network(nn.Module):
           1) Compute logits from encoder_fc.
           2) Use argmax or Gumbel-softmax to pick a code from the codebook.
         """
+        observation = observation.to(device)
          # Pass observations through the encoder
         logits = self.encoder_fc(observation)  # shape: (batch_size, codebook_size)
 

@@ -188,6 +188,7 @@ def run_selfplay_w_update(config: StochasticMuZeroConfig,
                 action=action,
                 search_stats=actor.stats())
             episode.append(state)
+            print(len(episode))
             env.apply(action)
             total_rew += env.reward(env.to_play())
         print("reward for this round: ", total_rew)
